@@ -25,13 +25,31 @@ function isPrivateChat(ctx) {
   return ctx.chat && ctx.chat.type === "private";
 }
 
-function safeUserLine(from) {
-  const id = from?.id ?? "unknown";
-  const fn = from?.first_name ?? "";
-  const ln = from?.last_name ?? "";
-  const name = `${fn}${ln ? " " + ln : ""}`.trim();
-  const uname = from?.username ? `@${from.username}` : "no_username";
-  return `id=${id} | ${name || "no_name"} | ${uname}`;
+function esc(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function userLink(from) {
+  const id = from?.id;
+  const name =
+    `${from?.first_name ?? ""}${from?.last_name ? " " + from.last_name : ""}`.trim() ||
+    "User";
+  if (!id) return esc(name);
+  return `<a href="tg://user?id=${id}">${esc(name)}</a>`;
+}
+
+function kv(obj) {
+  const lines = Object.entries(obj)
+    .filter(([, v]) => v !== undefined && v !== null && v !== "")
+    .map(([k, v]) => `${k}: ${v}`);
+  return `<pre>${esc(lines.join("\n"))}</pre>`;
+}
+
+function box(title, bodyHtml) {
+  return `<b>${esc(title)}</b>\n\n${bodyHtml}`;
 }
 
 async function sendToChat(ctx, chatId, text, extra) {
@@ -72,17 +90,23 @@ function getBot() {
 
   bot.command("start", async (ctx) => {
     if (isPrivateChat(ctx)) {
-      const uline = safeUserLine(ctx.from);
-      const t = nowUtcIso();
       await sendToChat(
         ctx,
         START_LOG_CHANNEL_ID,
-        `NEW USER START\n${uline}\nUTC: ${t}`
+        box(
+          "New User Started",
+          `${kv({
+            user_id: `${ctx.from?.id ?? "unknown"}`,
+            username: ctx.from?.username ? "@" + ctx.from.username : "no_username",
+            utc: nowUtcIso(),
+          })}\n${userLink(ctx.from)}`
+        ),
+        { parse_mode: "HTML", disable_web_page_preview: true }
       );
     }
 
     await ctx.reply(
-      "Welcome. Please join the required channels and tap “Verify & Participate”.\n\nIf you need help, use /contact."
+      "Welcome.\n\n1) Join the required channels\n2) Tap “Verify & Participate”\n\nNeed help? Use /contact."
     );
   });
 
@@ -96,17 +120,22 @@ function getBot() {
     const text = msg.replace(/^\/contact(@\w+)?\s*/i, "").trim();
 
     if (!text) {
-      await ctx.reply("Please type your message after /contact (free text).");
+      await ctx.reply("Usage:\n/contact your message");
       return;
     }
-
-    const uline = safeUserLine(ctx.from);
-    const t = nowUtcIso();
 
     await sendToChat(
       ctx,
       SUPPORT_CHANNEL_ID,
-      `CONTACT MESSAGE\n${uline}\nUTC: ${t}\n\n${text}`
+      box(
+        "Support Message",
+        `${kv({
+          user_id: `${ctx.from?.id ?? "unknown"}`,
+          username: ctx.from?.username ? "@" + ctx.from.username : "no_username",
+          utc: nowUtcIso(),
+        })}\n<b>Message</b>\n<blockquote>${esc(text)}</blockquote>\n\n${userLink(ctx.from)}`
+      ),
+      { parse_mode: "HTML", disable_web_page_preview: true }
     );
 
     await ctx.reply("Thanks. Your message has been sent to support.");
@@ -114,21 +143,33 @@ function getBot() {
 
   bot.command("whoami", async (ctx) => {
     const uid = ctx.from?.id;
-    const uline = safeUserLine(ctx.from);
+    const role = uid && isAdminId(uid) ? "ADMIN" : "USER";
     await ctx.reply(
-      `You are:\n${uline}\nUTC: ${nowUtcIso()}\nRole: ${uid && isAdminId(uid) ? "ADMIN" : "USER"}`
+      `You are:\nID: ${ctx.from?.id ?? "unknown"}\nUsername: ${
+        ctx.from?.username ? "@" + ctx.from.username : "no_username"
+      }\nUTC: ${nowUtcIso()}\nRole: ${role}`
     );
   });
 
   bot.command("admin", requireAdmin, async (ctx) => {
     await ctx.reply(
-      "Admin Panel\n\nCommands:\n/admin\n/admin_stats\n/admin_broadcast <text>\n\nNote: giveaway commands will be added in the next phase."
+      "Admin Panel\n\nCommands:\n/admin\n/admin_stats\n/admin_broadcast <text>\n\nNote: Giveaway commands will be added next."
     );
   });
 
   bot.command("admin_stats", requireAdmin, async (ctx) => {
     await ctx.reply(
-      `Admin Stats\nUTC: ${nowUtcIso()}\nAdmins: ${ADMIN_IDS.join(", ")}\nAdminPanelChatId: ${ADMIN_PANEL_CHAT_ID}`
+      box(
+        "Admin Stats",
+        `${kv({
+          utc: nowUtcIso(),
+          admins: ADMIN_IDS.join(", "),
+          admin_panel_chat_id: `${ADMIN_PANEL_CHAT_ID}`,
+          start_log_channel_id: `${START_LOG_CHANNEL_ID}`,
+          support_channel_id: `${SUPPORT_CHANNEL_ID}`,
+        })}`
+      ),
+      { parse_mode: "HTML", disable_web_page_preview: true }
     );
   });
 
@@ -141,7 +182,19 @@ function getBot() {
       return;
     }
 
-    const ok = await sendToChat(ctx, ADMIN_PANEL_CHAT_ID, `BROADCAST\nUTC: ${nowUtcIso()}\n\n${text}`);
+    const ok = await sendToChat(
+      ctx,
+      ADMIN_PANEL_CHAT_ID,
+      box(
+        "Admin Broadcast",
+        `${kv({
+          utc: nowUtcIso(),
+          from_admin_id: `${ctx.from?.id ?? "unknown"}`,
+        })}\n<blockquote>${esc(text)}</blockquote>`
+      ),
+      { parse_mode: "HTML", disable_web_page_preview: true }
+    );
+
     await ctx.reply(ok ? "Broadcast sent to admin panel." : "Failed to send broadcast.");
   });
 
