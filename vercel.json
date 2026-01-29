@@ -1,8 +1,7 @@
 {
-  "version": 2,
   "functions": {
     "api/bot.js": {
-      "runtime": "nodejs20.x"
+      "runtime": "nodejs18.x"
     }
   },
   "routes": [
