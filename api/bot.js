@@ -17,6 +17,16 @@ function numEnv(name) {
   return n;
 }
 
+function cfg() {
+  return {
+    BOT_TOKEN: mustEnv("BOT_TOKEN"),
+    OWNER_ID: numEnv("OWNER_ID"),
+    START_LOG_CHANNEL_ID: numEnv("START_LOG_CHANNEL_ID"),
+    SUPPORT_CHANNEL_ID: numEnv("SUPPORT_CHANNEL_ID"),
+    ADMIN_LOG_CHAT_ID: numEnv("ADMIN_LOG_CHAT_ID"),
+  };
+}
+
 function utcIso() {
   return new Date().toISOString();
 }
@@ -58,16 +68,6 @@ function getRedis() {
   return redis;
 }
 
-function cfg() {
-  return {
-    BOT_TOKEN: mustEnv("BOT_TOKEN"),
-    OWNER_ID: numEnv("OWNER_ID"),
-    START_LOG_CHANNEL_ID: numEnv("START_LOG_CHANNEL_ID"),
-    SUPPORT_CHANNEL_ID: numEnv("SUPPORT_CHANNEL_ID"),
-    ADMIN_LOG_CHAT_ID: numEnv("ADMIN_LOG_CHAT_ID"),
-  };
-}
-
 async function sendHtml(ctx, chatId, html, extra) {
   return ctx.telegram.sendMessage(chatId, html, {
     parse_mode: "HTML",
@@ -76,41 +76,21 @@ async function sendHtml(ctx, chatId, html, extra) {
   });
 }
 
-async function safeSendHtml(ctx, chatId, html) {
+async function safeSendHtml(ctx, chatId, html, extra) {
   try {
-    await sendHtml(ctx, chatId, html);
+    await sendHtml(ctx, chatId, html, extra);
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e?.message || e) };
   }
 }
 
-function safeAnswerCb(ctx) {
-  return ctx.answerCbQuery().catch(() => {});
-}
-
-function safeEdit(ctx, html, extra) {
-  return ctx
-    .editMessageText(html, { parse_mode: "HTML", disable_web_page_preview: true, ...(extra || {}) })
-    .catch(async () => {
-      await ctx.reply(html, { parse_mode: "HTML", disable_web_page_preview: true, ...(extra || {}) }).catch(() => {});
-    });
-}
-
-function safeReply(ctx, html, extra) {
-  return ctx.reply(html, { parse_mode: "HTML", disable_web_page_preview: true, ...(extra || {}) }).catch(() => {});
-}
-
-/* =========================
-   USER MESSAGE TEMPLATES
-========================= */
-
 const UI = {
   welcome: () =>
     [
-      hBold("Welcome to the Giveaway Bot"),
+      hBold("Welcome to Giveaway By Tayven"),
       "",
-      "Use the commands below:",
+      "Commands:",
       "• /giveaway — View active giveaways",
       "• /status — Check your status",
       "• /contact — Contact support",
@@ -150,55 +130,99 @@ const UI = {
       fmtUtcLine(),
       footer(),
     ].join("\n"),
-};
 
-/* =========================
-   REDIS KEYS
-========================= */
+  accessDenied: () =>
+    [
+      hBold("Access Denied"),
+      "",
+      "You do not have permission to access this panel.",
+      "",
+      fmtUtcLine(),
+    ].join("\n"),
+};
 
 const KEYS = {
+  adminsSet: "admins:set",
   usersStartedSet: "users:started:set",
   usersStartedZ: "users:started:z",
-  giveawaysAllZ: "giveaways:all:z",
   giveawaysActiveSet: "giveaways:active:set",
-  giveawayMeta: (gid) => `giveaway:${gid}:meta:hash`,
-  giveawaySettings: (gid) => `giveaway:${gid}:settings:hash`,
 };
-/* =========================
-   BOT
-========================= */
+function isOwner(ctx) {
+  return ctx.from?.id === cfg().OWNER_ID;
+}
 
+async function isAdmin(ctx) {
+  if (isOwner(ctx)) return true;
+  const r = getRedis();
+  const uid = ctx.from?.id;
+  if (!uid) return false;
+  return await r.sismember(KEYS.adminsSet, String(uid));
+}
+
+async function requireAdmin(ctx) {
+  if (!(await isAdmin(ctx))) {
+    await ctx.reply(UI.accessDenied(), { parse_mode: "HTML", disable_web_page_preview: true });
+    return false;
+  }
+  return true;
+}
+
+function kbMainAdmin() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("🎁 Giveaways", "a_giveaways")],
+    [Markup.button.callback("👥 Users", "a_users")],
+    [Markup.button.callback("📣 Messaging", "a_messaging")],
+    [Markup.button.callback("📊 Statistics", "a_stats")],
+    [Markup.button.callback("⚙️ Settings", "a_settings")],
+  ]);
+}
+
+function kbBack() {
+  return Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "a_back")]]);
+}
+
+function kbGiveaways() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("➕ Create Giveaway", "a_g_create")],
+    [Markup.button.callback("📋 List Giveaways", "a_g_list")],
+    [Markup.button.callback("⏸ Freeze Giveaway", "a_g_freeze")],
+    [Markup.button.callback("📸 Snapshot", "a_g_snapshot")],
+    [Markup.button.callback("🎲 Pick Winners", "a_g_pick")],
+    [Markup.button.callback("🏁 Close Giveaway", "a_g_close")],
+    [Markup.button.callback("⬅️ Back", "a_back")],
+  ]);
+}
+
+function kbMessaging() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("📌 Send Notice (All Users)", "a_notice_all")],
+    [Markup.button.callback("✉️ Message Single User", "a_msg_user")],
+    [Markup.button.callback("🎁 Notify Winners (Bulk)", "a_notify_winners")],
+    [Markup.button.callback("⬅️ Back", "a_back")],
+  ]);
+}
+
+function kbSettings(isOwnerUser) {
+  const rows = [];
+  if (isOwnerUser) {
+    rows.push([Markup.button.callback("👤 Admin Management", "a_admins")]);
+  }
+  rows.push([Markup.button.callback("⬅️ Back", "a_back")]);
+  return Markup.inlineKeyboard(rows);
+}
+
+function kbAdminManagement() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("➕ Add Admin", "a_admin_add")],
+    [Markup.button.callback("➖ Remove Admin", "a_admin_remove")],
+    [Markup.button.callback("⬅️ Back", "a_back")],
+  ]);
+}
 function getBot() {
   if (bot) return bot;
 
   const C = cfg();
   bot = new Telegraf(C.BOT_TOKEN);
-
-  bot.catch((err) => {
-    console.error("BOT_CATCH", err);
-  });
-
-  function isOwner(ctx) {
-    return ctx.from?.id === C.OWNER_ID;
-  }
-
-  async function isAdmin(ctx) {
-    if (isOwner(ctx)) return true;
-    const r = getRedis();
-    return await r.sismember("admins:set", String(ctx.from?.id));
-  }
-
-  async function requireAdmin(ctx) {
-    if (!(await isAdmin(ctx))) {
-      await safeReply(ctx, hBold("Access denied."), {});
-      return false;
-    }
-    return true;
-  }
-
-  bot.command("ping", async (ctx) => {
-    await ctx.reply("pong").catch(() => {});
-  });
 
   bot.command("start", async (ctx) => {
     const r = getRedis();
@@ -213,7 +237,9 @@ function getBot() {
         const html = [
           hBold("New User Started"),
           "",
-          `<pre>userId: ${esc(String(uid))}\nusername: ${esc(ctx.from?.username ? "@" + ctx.from.username : "no_username")}\nutc: ${esc(utcIso())}</pre>`,
+          `<pre>userId: ${esc(String(uid))}\nusername: ${esc(
+            ctx.from?.username ? "@" + ctx.from.username : "no_username"
+          )}\nutc: ${esc(utcIso())}</pre>`,
           userMention(ctx.from),
         ].join("\n");
 
@@ -221,39 +247,38 @@ function getBot() {
       }
     }
 
-    await safeReply(ctx, UI.welcome());
+    await ctx.reply(UI.welcome(), { parse_mode: "HTML", disable_web_page_preview: true });
   });
 
   bot.command("giveaway", async (ctx) => {
     const r = getRedis();
-
     const active = await r.smembers(KEYS.giveawaysActiveSet);
+
     if (!active || active.length === 0) {
-      await safeReply(ctx, UI.noActiveGiveaway());
+      await ctx.reply(UI.noActiveGiveaway(), { parse_mode: "HTML", disable_web_page_preview: true });
       return;
     }
 
     const gids = active.map(String);
 
     if (gids.length === 1) {
-      await safeReply(
-        ctx,
+      await ctx.reply(
         [
           hBold("Active Giveaway"),
           "",
           `Giveaway ID: <pre>${esc(gids[0])}</pre>`,
           "",
-          "Details will appear here in the next part.",
+          "Next: we will render full giveaway details + join/verify buttons in Phase-C.",
           "",
           fmtUtcLine(),
           footer(),
-        ].join("\n")
+        ].join("\n"),
+        { parse_mode: "HTML", disable_web_page_preview: true }
       );
       return;
     }
 
-    await safeReply(
-      ctx,
+    await ctx.reply(
       [
         hBold("Select a Giveaway"),
         "",
@@ -262,7 +287,11 @@ function getBot() {
         fmtUtcLine(),
         footer(),
       ].join("\n"),
-      Markup.inlineKeyboard(gids.map((gid) => [Markup.button.callback(`${gid}`, `u_g_view:${gid}`)]))
+      {
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+        ...Markup.inlineKeyboard(gids.map((gid) => [Markup.button.callback(`${gid}`, `u_g_view:${gid}`)])),
+      }
     );
   });
 
@@ -270,7 +299,7 @@ function getBot() {
     const r = getRedis();
     const uid = ctx.from?.id;
     if (!uid) {
-      await ctx.reply("Unable to read your userId.").catch(() => {});
+      await ctx.reply("Unable to read your userId.");
       return;
     }
 
@@ -278,8 +307,7 @@ function getBot() {
     const gids = (active || []).map(String);
 
     if (gids.length === 0) {
-      await safeReply(
-        ctx,
+      await ctx.reply(
         [
           hBold("Your Status"),
           "",
@@ -288,15 +316,19 @@ function getBot() {
           "",
           fmtUtcLine(),
           footer(),
-        ].join("\n")
+        ].join("\n"),
+        { parse_mode: "HTML", disable_web_page_preview: true }
       );
       return;
     }
 
-    await safeReply(
-      ctx,
+    await ctx.reply(
       [hBold("Select a Giveaway to View Status"), "", fmtUtcLine(), footer()].join("\n"),
-      Markup.inlineKeyboard(gids.map((gid) => [Markup.button.callback(`${gid}`, `u_status:${gid}`)]))
+      {
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+        ...Markup.inlineKeyboard(gids.map((gid) => [Markup.button.callback(`${gid}`, `u_status:${gid}`)])),
+      }
     );
   });
 
@@ -305,7 +337,7 @@ function getBot() {
     const text = msg.replace(/^\/contact(@\w+)?\s*/i, "").trim();
 
     if (!text) {
-      await safeReply(ctx, UI.contactUsage());
+      await ctx.reply(UI.contactUsage(), { parse_mode: "HTML", disable_web_page_preview: true });
       return;
     }
 
@@ -323,254 +355,221 @@ function getBot() {
     ].join("\n");
 
     await safeSendHtml(ctx, C.SUPPORT_CHANNEL_ID, html);
-    await safeReply(ctx, UI.contactAck());
+    await ctx.reply(UI.contactAck(), { parse_mode: "HTML", disable_web_page_preview: true });
   });
-bot.action(/^u_g_view:(.+)$/i, async (ctx) => {
-    const gid = String(ctx.match?.[1] || "").trim();
-    await safeAnswerCb(ctx);
 
-    await safeReply(
-      ctx,
+  bot.action(/^u_g_view:(.+)$/i, async (ctx) => {
+    const gid = String(ctx.match[1] || "").trim();
+    await ctx.answerCbQuery();
+
+    await ctx.reply(
       [
         hBold("Giveaway Details"),
         "",
         `Giveaway ID: <pre>${esc(gid)}</pre>`,
         "",
-        "Details + Participate button will be added in the next part.",
+        "Next: full details + join/verify buttons in Phase-C.",
         "",
         fmtUtcLine(),
         footer(),
-      ].join("\n")
+      ].join("\n"),
+      { parse_mode: "HTML", disable_web_page_preview: true }
     );
   });
 
   bot.action(/^u_status:(.+)$/i, async (ctx) => {
-    const gid = String(ctx.match?.[1] || "").trim();
-    await safeAnswerCb(ctx);
+    const gid = String(ctx.match[1] || "").trim();
+    await ctx.answerCbQuery();
 
-    await safeReply(
-      ctx,
+    await ctx.reply(
       [
         hBold("Status Details"),
         "",
         `Giveaway ID: <pre>${esc(gid)}</pre>`,
         "",
-        "Status rendering will be added in the next part.",
+        "Next: status rendering in Phase-C.",
         "",
         fmtUtcLine(),
         footer(),
-      ].join("\n")
+      ].join("\n"),
+      { parse_mode: "HTML", disable_web_page_preview: true }
     );
   });
 
   bot.command("admin", async (ctx) => {
     if (!(await requireAdmin(ctx))) return;
 
-    await safeReply(
-      ctx,
+    await ctx.reply(
       [hBold("Admin Control Panel"), "", "Select a section:", "", fmtUtcLine()].join("\n"),
-      Markup.inlineKeyboard([
-        [Markup.button.callback("🎁 Giveaways", "a_giveaways")],
-        [Markup.button.callback("👥 Participants / Users", "a_users")],
-        [Markup.button.callback("🏆 Winners & Claims", "a_winners")],
-        [Markup.button.callback("📣 Messaging / Notice", "a_messaging")],
-        [Markup.button.callback("📊 Statistics", "a_stats")],
-        [Markup.button.callback("📂 Logs & Audit", "a_logs")],
-        [Markup.button.callback("⚙️ Settings", "a_settings")],
-        [Markup.button.callback("❌ Exit", "a_exit")],
-      ])
+      { parse_mode: "HTML", disable_web_page_preview: true, ...kbMainAdmin() }
     );
   });
 
-  bot.action("a_exit", async (ctx) => {
-    await safeAnswerCb(ctx);
-    await safeEdit(ctx, [hBold("Panel closed."), "", fmtUtcLine()].join("\n"));
-  });
+  bot.action("a_back", async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!(await requireAdmin(ctx))) return;
 
-  bot.action("a_back_main", async (ctx) => {
-    await safeAnswerCb(ctx);
-    await safeEdit(
-      ctx,
-      [hBold("Admin Control Panel"), "", "Select a section:", "", fmtUtcLine()].join("\n"),
-      Markup.inlineKeyboard([
-        [Markup.button.callback("🎁 Giveaways", "a_giveaways")],
-        [Markup.button.callback("👥 Participants / Users", "a_users")],
-        [Markup.button.callback("🏆 Winners & Claims", "a_winners")],
-        [Markup.button.callback("📣 Messaging / Notice", "a_messaging")],
-        [Markup.button.callback("📊 Statistics", "a_stats")],
-        [Markup.button.callback("📂 Logs & Audit", "a_logs")],
-        [Markup.button.callback("⚙️ Settings", "a_settings")],
-        [Markup.button.callback("❌ Exit", "a_exit")],
-      ])
-    );
+    try {
+      await ctx.editMessageText(
+        [hBold("Admin Control Panel"), "", "Select a section:", "", fmtUtcLine()].join("\n"),
+        { parse_mode: "HTML", disable_web_page_preview: true, ...kbMainAdmin() }
+      );
+    } catch (e) {
+      await ctx.reply(
+        [hBold("Admin Control Panel"), "", "Select a section:", "", fmtUtcLine()].join("\n"),
+        { parse_mode: "HTML", disable_web_page_preview: true, ...kbMainAdmin() }
+      );
+    }
   });
 
   bot.action("a_giveaways", async (ctx) => {
-    await safeAnswerCb(ctx);
+    await ctx.answerCbQuery();
     if (!(await requireAdmin(ctx))) return;
 
-    await safeEdit(
-      ctx,
-      [hBold("Giveaways"), "", "Manage giveaways.", "", fmtUtcLine()].join("\n"),
-      Markup.inlineKeyboard([
-        [Markup.button.callback("➕ Create Giveaway", "a_g_create")],
-        [Markup.button.callback("📋 List Giveaways", "a_g_list")],
-        [Markup.button.callback("▶️ Open Giveaway", "a_g_open")],
-        [Markup.button.callback("⏸ Freeze Giveaway", "a_g_freeze")],
-        [Markup.button.callback("🧊 Snapshot", "a_g_snapshot")],
-        [Markup.button.callback("🎯 Pick Winners", "a_g_pick")],
-        [Markup.button.callback("🔒 Close Giveaway", "a_g_close")],
-        [Markup.button.callback("🗑 Delete Giveaway", "a_g_delete")],
-        [Markup.button.callback("⬅️ Back", "a_back_main")],
-      ])
+    await ctx.editMessageText(
+      [hBold("Giveaways"), "", "Manage giveaway lifecycle from here.", "", fmtUtcLine()].join("\n"),
+      { parse_mode: "HTML", disable_web_page_preview: true, ...kbGiveaways() }
     );
   });
 
   bot.action("a_users", async (ctx) => {
-    await safeAnswerCb(ctx);
+    await ctx.answerCbQuery();
     if (!(await requireAdmin(ctx))) return;
 
-    await safeEdit(
-      ctx,
-      [hBold("Participants / Users"), "", "User tools (will be expanded).", "", fmtUtcLine()].join("\n"),
-      Markup.inlineKeyboard([
-        [Markup.button.callback("🔍 Search User", "a_u_search")],
-        [Markup.button.callback("✅ Valid", "a_u_valid")],
-        [Markup.button.callback("⚠️ Warning", "a_u_warning")],
-        [Markup.button.callback("❌ Invalid", "a_u_invalid")],
-        [Markup.button.callback("🔒 Locked", "a_u_locked")],
-        [Markup.button.callback("⬅️ Back", "a_back_main")],
-      ])
+    await ctx.editMessageText(
+      [hBold("Users"), "", "Next: user search + profile actions in Phase-C.", "", fmtUtcLine()].join("\n"),
+      { parse_mode: "HTML", disable_web_page_preview: true, ...kbBack() }
     );
   });
 
-  bot.action("a_winners", async (ctx) => {
-    await safeAnswerCb(ctx);
+  bot.action("a_messaging", async (ctx) => {
+    await ctx.answerCbQuery();
     if (!(await requireAdmin(ctx))) return;
 
-    await safeEdit(
-      ctx,
-      [hBold("Winners & Claims"), "", "Winner/claim tools (will be expanded).", "", fmtUtcLine()].join("\n"),
-      Markup.inlineKeyboard([
-        [Markup.button.callback("🎯 View Winners", "a_w_view")],
-        [Markup.button.callback("✉️ Send Claim (Bulk)", "a_w_send_bulk")],
-        [Markup.button.callback("🔁 Resend Claim", "a_w_resend")],
-        [Markup.button.callback("⏰ Expired Claims", "a_w_expired")],
-        [Markup.button.callback("❌ Disqualify Winner", "a_w_disq")],
-        [Markup.button.callback("⬅️ Back", "a_back_main")],
-      ])
-    );
-  });
-bot.action("a_messaging", async (ctx) => {
-    await safeAnswerCb(ctx);
-    if (!(await requireAdmin(ctx))) return;
-
-    await safeEdit(
-      ctx,
-      [hBold("Messaging / Notice"), "", "Broadcast and direct messages.", "", fmtUtcLine()].join("\n"),
-      Markup.inlineKeyboard([
-        [Markup.button.callback("📌 Send Notice (All Users)", "a_notice_all")],
-        [Markup.button.callback("🎁 Message Participants", "a_msg_participants")],
-        [Markup.button.callback("👤 Message Single User", "a_msg_user")],
-        [Markup.button.callback("🔁 Resend Failed", "a_msg_resend_failed")],
-        [Markup.button.callback("⬅️ Back", "a_back_main")],
-      ])
+    await ctx.editMessageText(
+      [hBold("System Messaging"), "", "Broadcast & direct messaging tools.", "", fmtUtcLine()].join("\n"),
+      { parse_mode: "HTML", disable_web_page_preview: true, ...kbMessaging() }
     );
   });
 
   bot.action("a_stats", async (ctx) => {
-    await safeAnswerCb(ctx);
+    await ctx.answerCbQuery();
     if (!(await requireAdmin(ctx))) return;
 
-    await safeEdit(
-      ctx,
+    await ctx.editMessageText(
       [
-        hBold("Statistics"),
+        hBold("Bot Statistics"),
         "",
-        "Statistics dashboard will be added later.",
-        "",
-        "• Users",
-        "• Giveaways",
-        "• Winners & Claims",
-        "• Violations",
+        "Next: detailed stats in Phase-C.",
+        "• users started",
+        "• active giveaways",
+        "• participants by status",
+        "• winners & claims",
         "",
         fmtUtcLine(),
       ].join("\n"),
-      Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "a_back_main")]])
-    );
-  });
-
-  bot.action("a_logs", async (ctx) => {
-    await safeAnswerCb(ctx);
-    if (!(await requireAdmin(ctx))) return;
-
-    await safeEdit(
-      ctx,
-      [hBold("Logs & Audit"), "", "Audit logs/export will be added later.", "", fmtUtcLine()].join("\n"),
-      Markup.inlineKeyboard([
-        [Markup.button.callback("📁 Export Logs", "a_logs_export")],
-        [Markup.button.callback("🗑 Clear Logs", "a_logs_clear")],
-        [Markup.button.callback("⬅️ Back", "a_back_main")],
-      ])
+      { parse_mode: "HTML", disable_web_page_preview: true, ...kbBack() }
     );
   });
 
   bot.action("a_settings", async (ctx) => {
-    await safeAnswerCb(ctx);
+    await ctx.answerCbQuery();
     if (!(await requireAdmin(ctx))) return;
 
-    await safeEdit(
-      ctx,
-      [hBold("Settings"), "", "Global admin-only settings.", "", fmtUtcLine()].join("\n"),
-      Markup.inlineKeyboard([
-        [Markup.button.callback("👤 Admin Management", "a_admins")],
-        [Markup.button.callback("⬅️ Back", "a_back_main")],
-      ])
+    await ctx.editMessageText(
+      [hBold("System Settings"), "", "Global settings for admins only.", "", fmtUtcLine()].join("\n"),
+      { parse_mode: "HTML", disable_web_page_preview: true, ...kbSettings(isOwner(ctx)) }
     );
   });
 
   bot.action("a_admins", async (ctx) => {
-    await safeAnswerCb(ctx);
+    await ctx.answerCbQuery();
     if (!isOwner(ctx)) {
-      await safeReply(ctx, hBold("Only owner can manage admins."));
+      await ctx.reply(UI.accessDenied(), { parse_mode: "HTML", disable_web_page_preview: true });
       return;
     }
 
-    await safeEdit(
-      ctx,
-      [hBold("Admin Management"), "", "Owner-only admin controls.", "", fmtUtcLine()].join("\n"),
-      Markup.inlineKeyboard([
-        [Markup.button.callback("➕ Add Admin", "a_admin_add")],
-        [Markup.button.callback("➖ Remove Admin", "a_admin_remove")],
-        [Markup.button.callback("📋 List Admins", "a_admin_list")],
-        [Markup.button.callback("⬅️ Back", "a_settings")],
-      ])
+    await ctx.editMessageText(
+      [hBold("Admin Management"), "", "Add or remove bot admins.", "", fmtUtcLine()].join("\n"),
+      { parse_mode: "HTML", disable_web_page_preview: true, ...kbAdminManagement() }
     );
   });
 
-  bot.action(/^(a_|u_).+$/i, async (ctx) => {
-    await safeAnswerCb(ctx);
+  bot.action("a_admin_add", async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!isOwner(ctx)) {
+      await ctx.reply(UI.accessDenied(), { parse_mode: "HTML", disable_web_page_preview: true });
+      return;
+    }
+    await ctx.reply(
+      [
+        hBold("Add Admin"),
+        "",
+        "Next (Phase-C): will ask for userId and add to admins list.",
+        "",
+        fmtUtcLine(),
+      ].join("\n"),
+      { parse_mode: "HTML", disable_web_page_preview: true }
+    );
+  });
+
+  bot.action("a_admin_remove", async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!isOwner(ctx)) {
+      await ctx.reply(UI.accessDenied(), { parse_mode: "HTML", disable_web_page_preview: true });
+      return;
+    }
+    await ctx.reply(
+      [
+        hBold("Remove Admin"),
+        "",
+        "Next (Phase-C): will ask for userId and remove from admins list.",
+        "",
+        fmtUtcLine(),
+      ].join("\n"),
+      { parse_mode: "HTML", disable_web_page_preview: true }
+    );
+  });
+
+  bot.action(/^(a_g_create|a_g_list|a_g_freeze|a_g_snapshot|a_g_pick|a_g_close)$/i, async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!(await requireAdmin(ctx))) return;
+
+    await ctx.reply(
+      [hBold("Coming in Phase-C"), "", `Action: <pre>${esc(ctx.match[1])}</pre>`, "", fmtUtcLine()].join("\n"),
+      { parse_mode: "HTML", disable_web_page_preview: true }
+    );
+  });
+
+  bot.action(/^(a_notice_all|a_msg_user|a_notify_winners)$/i, async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!(await requireAdmin(ctx))) return;
+
+    await ctx.reply(
+      [hBold("Coming in Phase-C"), "", `Action: <pre>${esc(ctx.match[1])}</pre>`, "", fmtUtcLine()].join("\n"),
+      { parse_mode: "HTML", disable_web_page_preview: true }
+    );
   });
 
   bot.on("message", async (ctx) => {
     if (ctx.message?.text?.startsWith("/")) {
-      await ctx.reply("Unknown command.").catch(() => {});
+      await ctx.reply("Unknown command.");
     }
   });
 
   return bot;
 }
-
-/* =========================
-   WEBHOOK HANDLER
-========================= */
-
 async function readJsonBody(req) {
   if (req.body && typeof req.body === "object") return req.body;
   const chunks = [];
   for await (const c of req) chunks.push(c);
   const raw = Buffer.concat(chunks).toString("utf8");
-  return JSON.parse(raw || "{}");
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    return {};
+  }
 }
 
 module.exports = async (req, res) => {
@@ -584,13 +583,13 @@ module.exports = async (req, res) => {
 
     const b = getBot();
     const update = await readJsonBody(req);
+
     await b.handleUpdate(update);
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.end(JSON.stringify({ ok: true }));
   } catch (e) {
-    console.error("WEBHOOK_ERROR", e);
     res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
