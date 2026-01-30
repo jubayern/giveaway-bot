@@ -85,6 +85,22 @@ async function safeSendHtml(ctx, chatId, html) {
   }
 }
 
+function safeAnswerCb(ctx) {
+  return ctx.answerCbQuery().catch(() => {});
+}
+
+function safeEdit(ctx, html, extra) {
+  return ctx
+    .editMessageText(html, { parse_mode: "HTML", disable_web_page_preview: true, ...(extra || {}) })
+    .catch(async () => {
+      await ctx.reply(html, { parse_mode: "HTML", disable_web_page_preview: true, ...(extra || {}) }).catch(() => {});
+    });
+}
+
+function safeReply(ctx, html, extra) {
+  return ctx.reply(html, { parse_mode: "HTML", disable_web_page_preview: true, ...(extra || {}) }).catch(() => {});
+}
+
 /* =========================
    USER MESSAGE TEMPLATES
 ========================= */
@@ -137,7 +153,7 @@ const UI = {
 };
 
 /* =========================
-   REDIS KEYS (PART-1)
+   REDIS KEYS
 ========================= */
 
 const KEYS = {
@@ -148,7 +164,6 @@ const KEYS = {
   giveawayMeta: (gid) => `giveaway:${gid}:meta:hash`,
   giveawaySettings: (gid) => `giveaway:${gid}:settings:hash`,
 };
-
 /* =========================
    BOT
 ========================= */
@@ -158,6 +173,32 @@ function getBot() {
 
   const C = cfg();
   bot = new Telegraf(C.BOT_TOKEN);
+
+  bot.catch((err) => {
+    console.error("BOT_CATCH", err);
+  });
+
+  function isOwner(ctx) {
+    return ctx.from?.id === C.OWNER_ID;
+  }
+
+  async function isAdmin(ctx) {
+    if (isOwner(ctx)) return true;
+    const r = getRedis();
+    return await r.sismember("admins:set", String(ctx.from?.id));
+  }
+
+  async function requireAdmin(ctx) {
+    if (!(await isAdmin(ctx))) {
+      await safeReply(ctx, hBold("Access denied."), {});
+      return false;
+    }
+    return true;
+  }
+
+  bot.command("ping", async (ctx) => {
+    await ctx.reply("pong").catch(() => {});
+  });
 
   bot.command("start", async (ctx) => {
     const r = getRedis();
@@ -180,7 +221,7 @@ function getBot() {
       }
     }
 
-    await ctx.reply(UI.welcome(), { parse_mode: "HTML", disable_web_page_preview: true });
+    await safeReply(ctx, UI.welcome());
   });
 
   bot.command("giveaway", async (ctx) => {
@@ -188,14 +229,15 @@ function getBot() {
 
     const active = await r.smembers(KEYS.giveawaysActiveSet);
     if (!active || active.length === 0) {
-      await ctx.reply(UI.noActiveGiveaway(), { parse_mode: "HTML", disable_web_page_preview: true });
+      await safeReply(ctx, UI.noActiveGiveaway());
       return;
     }
 
     const gids = active.map(String);
 
     if (gids.length === 1) {
-      await ctx.reply(
+      await safeReply(
+        ctx,
         [
           hBold("Active Giveaway"),
           "",
@@ -205,13 +247,13 @@ function getBot() {
           "",
           fmtUtcLine(),
           footer(),
-        ].join("\n"),
-        { parse_mode: "HTML", disable_web_page_preview: true }
+        ].join("\n")
       );
       return;
     }
 
-    await ctx.reply(
+    await safeReply(
+      ctx,
       [
         hBold("Select a Giveaway"),
         "",
@@ -220,13 +262,7 @@ function getBot() {
         fmtUtcLine(),
         footer(),
       ].join("\n"),
-      {
-        parse_mode: "HTML",
-        disable_web_page_preview: true,
-        ...Markup.inlineKeyboard(
-          gids.map((gid) => [Markup.button.callback(`${gid}`, `u_g_view:${gid}`)])
-        ),
-      }
+      Markup.inlineKeyboard(gids.map((gid) => [Markup.button.callback(`${gid}`, `u_g_view:${gid}`)]))
     );
   });
 
@@ -234,7 +270,7 @@ function getBot() {
     const r = getRedis();
     const uid = ctx.from?.id;
     if (!uid) {
-      await ctx.reply("Unable to read your userId.");
+      await ctx.reply("Unable to read your userId.").catch(() => {});
       return;
     }
 
@@ -242,7 +278,8 @@ function getBot() {
     const gids = (active || []).map(String);
 
     if (gids.length === 0) {
-      await ctx.reply(
+      await safeReply(
+        ctx,
         [
           hBold("Your Status"),
           "",
@@ -251,36 +288,24 @@ function getBot() {
           "",
           fmtUtcLine(),
           footer(),
-        ].join("\n"),
-        { parse_mode: "HTML", disable_web_page_preview: true }
+        ].join("\n")
       );
       return;
     }
 
-    await ctx.reply(
-      [
-        hBold("Select a Giveaway to View Status"),
-        "",
-        fmtUtcLine(),
-        footer(),
-      ].join("\n"),
-      {
-        parse_mode: "HTML",
-        disable_web_page_preview: true,
-        ...Markup.inlineKeyboard(
-          gids.map((gid) => [Markup.button.callback(`${gid}`, `u_status:${gid}`)])
-        ),
-      }
+    await safeReply(
+      ctx,
+      [hBold("Select a Giveaway to View Status"), "", fmtUtcLine(), footer()].join("\n"),
+      Markup.inlineKeyboard(gids.map((gid) => [Markup.button.callback(`${gid}`, `u_status:${gid}`)]))
     );
   });
 
   bot.command("contact", async (ctx) => {
-    const C = cfg();
     const msg = ctx.message?.text || "";
     const text = msg.replace(/^\/contact(@\w+)?\s*/i, "").trim();
 
     if (!text) {
-      await ctx.reply(UI.contactUsage(), { parse_mode: "HTML", disable_web_page_preview: true });
+      await safeReply(ctx, UI.contactUsage());
       return;
     }
 
@@ -298,14 +323,14 @@ function getBot() {
     ].join("\n");
 
     await safeSendHtml(ctx, C.SUPPORT_CHANNEL_ID, html);
-    await ctx.reply(UI.contactAck(), { parse_mode: "HTML", disable_web_page_preview: true });
+    await safeReply(ctx, UI.contactAck());
   });
+bot.action(/^u_g_view:(.+)$/i, async (ctx) => {
+    const gid = String(ctx.match?.[1] || "").trim();
+    await safeAnswerCb(ctx);
 
-  bot.action(/^u_g_view:(.+)$/i, async (ctx) => {
-    const gid = String(ctx.match[1] || "").trim();
-    await ctx.answerCbQuery();
-
-    await ctx.reply(
+    await safeReply(
+      ctx,
       [
         hBold("Giveaway Details"),
         "",
@@ -315,16 +340,16 @@ function getBot() {
         "",
         fmtUtcLine(),
         footer(),
-      ].join("\n"),
-      { parse_mode: "HTML", disable_web_page_preview: true }
+      ].join("\n")
     );
   });
 
   bot.action(/^u_status:(.+)$/i, async (ctx) => {
-    const gid = String(ctx.match[1] || "").trim();
-    await ctx.answerCbQuery();
+    const gid = String(ctx.match?.[1] || "").trim();
+    await safeAnswerCb(ctx);
 
-    await ctx.reply(
+    await safeReply(
+      ctx,
       [
         hBold("Status Details"),
         "",
@@ -334,14 +359,202 @@ function getBot() {
         "",
         fmtUtcLine(),
         footer(),
-      ].join("\n"),
-      { parse_mode: "HTML", disable_web_page_preview: true }
+      ].join("\n")
     );
+  });
+
+  bot.command("admin", async (ctx) => {
+    if (!(await requireAdmin(ctx))) return;
+
+    await safeReply(
+      ctx,
+      [hBold("Admin Control Panel"), "", "Select a section:", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([
+        [Markup.button.callback("🎁 Giveaways", "a_giveaways")],
+        [Markup.button.callback("👥 Participants / Users", "a_users")],
+        [Markup.button.callback("🏆 Winners & Claims", "a_winners")],
+        [Markup.button.callback("📣 Messaging / Notice", "a_messaging")],
+        [Markup.button.callback("📊 Statistics", "a_stats")],
+        [Markup.button.callback("📂 Logs & Audit", "a_logs")],
+        [Markup.button.callback("⚙️ Settings", "a_settings")],
+        [Markup.button.callback("❌ Exit", "a_exit")],
+      ])
+    );
+  });
+
+  bot.action("a_exit", async (ctx) => {
+    await safeAnswerCb(ctx);
+    await safeEdit(ctx, [hBold("Panel closed."), "", fmtUtcLine()].join("\n"));
+  });
+
+  bot.action("a_back_main", async (ctx) => {
+    await safeAnswerCb(ctx);
+    await safeEdit(
+      ctx,
+      [hBold("Admin Control Panel"), "", "Select a section:", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([
+        [Markup.button.callback("🎁 Giveaways", "a_giveaways")],
+        [Markup.button.callback("👥 Participants / Users", "a_users")],
+        [Markup.button.callback("🏆 Winners & Claims", "a_winners")],
+        [Markup.button.callback("📣 Messaging / Notice", "a_messaging")],
+        [Markup.button.callback("📊 Statistics", "a_stats")],
+        [Markup.button.callback("📂 Logs & Audit", "a_logs")],
+        [Markup.button.callback("⚙️ Settings", "a_settings")],
+        [Markup.button.callback("❌ Exit", "a_exit")],
+      ])
+    );
+  });
+
+  bot.action("a_giveaways", async (ctx) => {
+    await safeAnswerCb(ctx);
+    if (!(await requireAdmin(ctx))) return;
+
+    await safeEdit(
+      ctx,
+      [hBold("Giveaways"), "", "Manage giveaways.", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([
+        [Markup.button.callback("➕ Create Giveaway", "a_g_create")],
+        [Markup.button.callback("📋 List Giveaways", "a_g_list")],
+        [Markup.button.callback("▶️ Open Giveaway", "a_g_open")],
+        [Markup.button.callback("⏸ Freeze Giveaway", "a_g_freeze")],
+        [Markup.button.callback("🧊 Snapshot", "a_g_snapshot")],
+        [Markup.button.callback("🎯 Pick Winners", "a_g_pick")],
+        [Markup.button.callback("🔒 Close Giveaway", "a_g_close")],
+        [Markup.button.callback("🗑 Delete Giveaway", "a_g_delete")],
+        [Markup.button.callback("⬅️ Back", "a_back_main")],
+      ])
+    );
+  });
+
+  bot.action("a_users", async (ctx) => {
+    await safeAnswerCb(ctx);
+    if (!(await requireAdmin(ctx))) return;
+
+    await safeEdit(
+      ctx,
+      [hBold("Participants / Users"), "", "User tools (will be expanded).", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([
+        [Markup.button.callback("🔍 Search User", "a_u_search")],
+        [Markup.button.callback("✅ Valid", "a_u_valid")],
+        [Markup.button.callback("⚠️ Warning", "a_u_warning")],
+        [Markup.button.callback("❌ Invalid", "a_u_invalid")],
+        [Markup.button.callback("🔒 Locked", "a_u_locked")],
+        [Markup.button.callback("⬅️ Back", "a_back_main")],
+      ])
+    );
+  });
+
+  bot.action("a_winners", async (ctx) => {
+    await safeAnswerCb(ctx);
+    if (!(await requireAdmin(ctx))) return;
+
+    await safeEdit(
+      ctx,
+      [hBold("Winners & Claims"), "", "Winner/claim tools (will be expanded).", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([
+        [Markup.button.callback("🎯 View Winners", "a_w_view")],
+        [Markup.button.callback("✉️ Send Claim (Bulk)", "a_w_send_bulk")],
+        [Markup.button.callback("🔁 Resend Claim", "a_w_resend")],
+        [Markup.button.callback("⏰ Expired Claims", "a_w_expired")],
+        [Markup.button.callback("❌ Disqualify Winner", "a_w_disq")],
+        [Markup.button.callback("⬅️ Back", "a_back_main")],
+      ])
+    );
+  });
+bot.action("a_messaging", async (ctx) => {
+    await safeAnswerCb(ctx);
+    if (!(await requireAdmin(ctx))) return;
+
+    await safeEdit(
+      ctx,
+      [hBold("Messaging / Notice"), "", "Broadcast and direct messages.", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([
+        [Markup.button.callback("📌 Send Notice (All Users)", "a_notice_all")],
+        [Markup.button.callback("🎁 Message Participants", "a_msg_participants")],
+        [Markup.button.callback("👤 Message Single User", "a_msg_user")],
+        [Markup.button.callback("🔁 Resend Failed", "a_msg_resend_failed")],
+        [Markup.button.callback("⬅️ Back", "a_back_main")],
+      ])
+    );
+  });
+
+  bot.action("a_stats", async (ctx) => {
+    await safeAnswerCb(ctx);
+    if (!(await requireAdmin(ctx))) return;
+
+    await safeEdit(
+      ctx,
+      [
+        hBold("Statistics"),
+        "",
+        "Statistics dashboard will be added later.",
+        "",
+        "• Users",
+        "• Giveaways",
+        "• Winners & Claims",
+        "• Violations",
+        "",
+        fmtUtcLine(),
+      ].join("\n"),
+      Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "a_back_main")]])
+    );
+  });
+
+  bot.action("a_logs", async (ctx) => {
+    await safeAnswerCb(ctx);
+    if (!(await requireAdmin(ctx))) return;
+
+    await safeEdit(
+      ctx,
+      [hBold("Logs & Audit"), "", "Audit logs/export will be added later.", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([
+        [Markup.button.callback("📁 Export Logs", "a_logs_export")],
+        [Markup.button.callback("🗑 Clear Logs", "a_logs_clear")],
+        [Markup.button.callback("⬅️ Back", "a_back_main")],
+      ])
+    );
+  });
+
+  bot.action("a_settings", async (ctx) => {
+    await safeAnswerCb(ctx);
+    if (!(await requireAdmin(ctx))) return;
+
+    await safeEdit(
+      ctx,
+      [hBold("Settings"), "", "Global admin-only settings.", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([
+        [Markup.button.callback("👤 Admin Management", "a_admins")],
+        [Markup.button.callback("⬅️ Back", "a_back_main")],
+      ])
+    );
+  });
+
+  bot.action("a_admins", async (ctx) => {
+    await safeAnswerCb(ctx);
+    if (!isOwner(ctx)) {
+      await safeReply(ctx, hBold("Only owner can manage admins."));
+      return;
+    }
+
+    await safeEdit(
+      ctx,
+      [hBold("Admin Management"), "", "Owner-only admin controls.", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([
+        [Markup.button.callback("➕ Add Admin", "a_admin_add")],
+        [Markup.button.callback("➖ Remove Admin", "a_admin_remove")],
+        [Markup.button.callback("📋 List Admins", "a_admin_list")],
+        [Markup.button.callback("⬅️ Back", "a_settings")],
+      ])
+    );
+  });
+
+  bot.action(/^(a_|u_).+$/i, async (ctx) => {
+    await safeAnswerCb(ctx);
   });
 
   bot.on("message", async (ctx) => {
     if (ctx.message?.text?.startsWith("/")) {
-      await ctx.reply("Unknown command.");
+      await ctx.reply("Unknown command.").catch(() => {});
     }
   });
 
@@ -377,192 +590,9 @@ module.exports = async (req, res) => {
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.end(JSON.stringify({ ok: true }));
   } catch (e) {
+    console.error("WEBHOOK_ERROR", e);
     res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 };
-
-/* =========================
-   ADMIN PANEL (PART-2)
-========================= */
-
-function isOwner(ctx) {
-  return ctx.from?.id === cfg().OWNER_ID;
-}
-
-async function isAdmin(ctx) {
-  if (isOwner(ctx)) return true;
-  const r = getRedis();
-  return await r.sismember("admins:set", String(ctx.from?.id));
-}
-
-async function requireAdmin(ctx) {
-  if (!(await isAdmin(ctx))) {
-    await ctx.reply("Access denied.");
-    return false;
-  }
-  return true;
-}
-
-/* -------- /admin -------- */
-
-bot.command("admin", async (ctx) => {
-  if (!(await requireAdmin(ctx))) return;
-
-  await ctx.reply(
-    [
-      hBold("Admin Control Panel"),
-      "",
-      "Select a section:",
-      "",
-      fmtUtcLine(),
-    ].join("\n"),
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback("🎁 Giveaways", "a_giveaways")],
-        [Markup.button.callback("👥 Users", "a_users")],
-        [Markup.button.callback("📣 Messaging", "a_messaging")],
-        [Markup.button.callback("📊 Statistics", "a_stats")],
-        [Markup.button.callback("⚙️ Settings", "a_settings")],
-      ]),
-    }
-  );
-});
-
-/* -------- Navigation -------- */
-
-bot.action("a_back", async (ctx) => {
-  await ctx.answerCbQuery();
-  await ctx.deleteMessage();
-  ctx.telegram.sendMessage(ctx.chat.id, "/admin");
-});
-
-/* -------- Giveaways -------- */
-
-bot.action("a_giveaways", async (ctx) => {
-  await ctx.answerCbQuery();
-  if (!(await requireAdmin(ctx))) return;
-
-  await ctx.editMessageText(
-    [
-      hBold("Giveaways"),
-      "",
-      "Manage all giveaways from here.",
-      "",
-      fmtUtcLine(),
-    ].join("\n"),
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback("➕ Create Giveaway", "a_g_create")],
-        [Markup.button.callback("📋 List Giveaways", "a_g_list")],
-        [Markup.button.callback("⬅️ Back", "a_back")],
-      ]),
-    }
-  );
-});
-
-/* -------- Messaging -------- */
-
-bot.action("a_messaging", async (ctx) => {
-  await ctx.answerCbQuery();
-  if (!(await requireAdmin(ctx))) return;
-
-  await ctx.editMessageText(
-    [
-      hBold("System Messaging"),
-      "",
-      "Send notices or direct messages.",
-      "",
-      fmtUtcLine(),
-    ].join("\n"),
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback("📌 Send Notice (All Users)", "a_notice_all")],
-        [Markup.button.callback("✉️ Message Single User", "a_msg_user")],
-        [Markup.button.callback("⬅️ Back", "a_back")],
-      ]),
-    }
-  );
-});
-
-/* -------- Statistics -------- */
-
-bot.action("a_stats", async (ctx) => {
-  await ctx.answerCbQuery();
-  if (!(await requireAdmin(ctx))) return;
-
-  await ctx.editMessageText(
-    [
-      hBold("Bot Statistics"),
-      "",
-      "Detailed statistics will appear here.",
-      "",
-      "• Users",
-      "• Giveaways",
-      "• Winners & Claims",
-      "• Admin Actions",
-      "",
-      fmtUtcLine(),
-    ].join("\n"),
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "a_back")]]),
-    }
-  );
-});
-
-/* -------- Settings -------- */
-
-bot.action("a_settings", async (ctx) => {
-  await ctx.answerCbQuery();
-  if (!(await requireAdmin(ctx))) return;
-
-  await ctx.editMessageText(
-    [
-      hBold("System Settings"),
-      "",
-      "Global admin-only settings.",
-      "",
-      fmtUtcLine(),
-    ].join("\n"),
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback("👤 Admin Management", "a_admins")],
-        [Markup.button.callback("⬅️ Back", "a_back")],
-      ]),
-    }
-  );
-});
-
-/* -------- Admin Management -------- */
-
-bot.action("a_admins", async (ctx) => {
-  await ctx.answerCbQuery();
-  if (!isOwner(ctx)) {
-    await ctx.reply("Only owner can manage admins.");
-    return;
-  }
-
-  await ctx.editMessageText(
-    [
-      hBold("Admin Management"),
-      "",
-      "Add or remove bot admins.",
-      "",
-      fmtUtcLine(),
-    ].join("\n"),
-    {
-      parse_mode: "HTML",
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback("➕ Add Admin", "a_admin_add")],
-        [Markup.button.callback("➖ Remove Admin", "a_admin_remove")],
-        [Markup.button.callback("⬅️ Back", "a_back")],
-      ]),
-    }
-  );
-});
