@@ -17,16 +17,6 @@ function numEnv(name) {
   return n;
 }
 
-function cfg() {
-  return {
-    BOT_TOKEN: mustEnv("BOT_TOKEN"),
-    OWNER_ID: numEnv("OWNER_ID"),
-    START_LOG_CHANNEL_ID: numEnv("START_LOG_CHANNEL_ID"),
-    SUPPORT_CHANNEL_ID: numEnv("SUPPORT_CHANNEL_ID"),
-    ADMIN_LOG_CHAT_ID: numEnv("ADMIN_LOG_CHAT_ID"),
-  };
-}
-
 function utcIso() {
   return new Date().toISOString();
 }
@@ -68,6 +58,16 @@ function getRedis() {
   return redis;
 }
 
+function cfg() {
+  return {
+    BOT_TOKEN: mustEnv("BOT_TOKEN"),
+    OWNER_ID: numEnv("OWNER_ID"),
+    START_LOG_CHANNEL_ID: numEnv("START_LOG_CHANNEL_ID"),
+    SUPPORT_CHANNEL_ID: numEnv("SUPPORT_CHANNEL_ID"),
+    ADMIN_LOG_CHAT_ID: numEnv("ADMIN_LOG_CHAT_ID"),
+  };
+}
+
 async function sendHtml(ctx, chatId, html, extra) {
   return ctx.telegram.sendMessage(chatId, html, {
     parse_mode: "HTML",
@@ -76,9 +76,9 @@ async function sendHtml(ctx, chatId, html, extra) {
   });
 }
 
-async function safeSendHtml(ctx, chatId, html, extra) {
+async function safeSendHtml(ctx, chatId, html) {
   try {
-    await sendHtml(ctx, chatId, html, extra);
+    await sendHtml(ctx, chatId, html);
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e?.message || e) };
@@ -88,7 +88,7 @@ async function safeSendHtml(ctx, chatId, html, extra) {
 const UI = {
   welcome: () =>
     [
-      hBold("Welcome to Giveaway By Tayven"),
+      hBold("Welcome to the Giveaway Bot"),
       "",
       "Commands:",
       "• /giveaway — View active giveaways",
@@ -135,96 +135,141 @@ const UI = {
     [
       hBold("Access Denied"),
       "",
-      "You do not have permission to access this panel.",
+      "You do not have permission to use this panel.",
+      "",
+      fmtUtcLine(),
+    ].join("\n"),
+
+  comingSoon: () =>
+    [
+      hBold("Coming Soon"),
+      "",
+      "This section is available in the next step.",
       "",
       fmtUtcLine(),
     ].join("\n"),
 };
 
 const KEYS = {
-  adminsSet: "admins:set",
   usersStartedSet: "users:started:set",
   usersStartedZ: "users:started:z",
   giveawaysActiveSet: "giveaways:active:set",
+  adminsSet: "admins:set",
+  adminWiz: (chatId) => `admin:wiz:${String(chatId)}`,
 };
-function isOwner(ctx) {
-  return ctx.from?.id === cfg().OWNER_ID;
+
+function isOwnerId(userId) {
+  return Number(userId) === cfg().OWNER_ID;
 }
 
-async function isAdmin(ctx) {
-  if (isOwner(ctx)) return true;
+async function isAdminId(userId) {
+  if (!userId) return false;
+  if (isOwnerId(userId)) return true;
   const r = getRedis();
-  const uid = ctx.from?.id;
-  if (!uid) return false;
-  return await r.sismember(KEYS.adminsSet, String(uid));
+  return (await r.sismember(KEYS.adminsSet, String(userId))) === 1;
 }
 
 async function requireAdmin(ctx) {
-  if (!(await isAdmin(ctx))) {
+  const ok = await isAdminId(ctx.from?.id);
+  if (!ok) {
     await ctx.reply(UI.accessDenied(), { parse_mode: "HTML", disable_web_page_preview: true });
     return false;
   }
   return true;
 }
 
-function kbMainAdmin() {
+async function logAdmin(ctx, html) {
+  const C = cfg();
+  await safeSendHtml(ctx, C.ADMIN_LOG_CHAT_ID, html);
+}
+
+function adminMainKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("🎁 Giveaways", "a_giveaways")],
-    [Markup.button.callback("👥 Users", "a_users")],
-    [Markup.button.callback("📣 Messaging", "a_messaging")],
-    [Markup.button.callback("📊 Statistics", "a_stats")],
-    [Markup.button.callback("⚙️ Settings", "a_settings")],
+    [Markup.button.callback("🎁 Giveaways", "a:giveaways"), Markup.button.callback("👥 Users", "a:users")],
+    [Markup.button.callback("🏆 Winners & Claims", "a:winners"), Markup.button.callback("📣 Messaging", "a:messaging")],
+    [Markup.button.callback("🧾 Logs", "a:logs"), Markup.button.callback("📊 Stats", "a:stats")],
+    [Markup.button.callback("⚙️ Settings", "a:settings")],
   ]);
 }
 
-function kbBack() {
-  return Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "a_back")]]);
+function backBtn() {
+  return Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "a:home")]]);
 }
 
-function kbGiveaways() {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback("➕ Create Giveaway", "a_g_create")],
-    [Markup.button.callback("📋 List Giveaways", "a_g_list")],
-    [Markup.button.callback("⏸ Freeze Giveaway", "a_g_freeze")],
-    [Markup.button.callback("📸 Snapshot", "a_g_snapshot")],
-    [Markup.button.callback("🎲 Pick Winners", "a_g_pick")],
-    [Markup.button.callback("🏁 Close Giveaway", "a_g_close")],
-    [Markup.button.callback("⬅️ Back", "a_back")],
-  ]);
+async function setWiz(r, chatId, obj) {
+  await r.set(KEYS.adminWiz(chatId), JSON.stringify(obj), { ex: 900 });
 }
 
-function kbMessaging() {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback("📌 Send Notice (All Users)", "a_notice_all")],
-    [Markup.button.callback("✉️ Message Single User", "a_msg_user")],
-    [Markup.button.callback("🎁 Notify Winners (Bulk)", "a_notify_winners")],
-    [Markup.button.callback("⬅️ Back", "a_back")],
-  ]);
-}
-
-function kbSettings(isOwnerUser) {
-  const rows = [];
-  if (isOwnerUser) {
-    rows.push([Markup.button.callback("👤 Admin Management", "a_admins")]);
+async function getWiz(r, chatId) {
+  const v = await r.get(KEYS.adminWiz(chatId));
+  if (!v) return null;
+  try {
+    return JSON.parse(v);
+  } catch {
+    return null;
   }
-  rows.push([Markup.button.callback("⬅️ Back", "a_back")]);
-  return Markup.inlineKeyboard(rows);
 }
 
-function kbAdminManagement() {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback("➕ Add Admin", "a_admin_add")],
-    [Markup.button.callback("➖ Remove Admin", "a_admin_remove")],
-    [Markup.button.callback("⬅️ Back", "a_back")],
-  ]);
+async function clearWiz(r, chatId) {
+  await r.del(KEYS.adminWiz(chatId));
 }
+
+async function replyOrEdit(ctx, html, keyboard) {
+  const extra = {
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+    ...(keyboard ? keyboard : {}),
+  };
+
+  try {
+    if (ctx.updateType === "callback_query") {
+      await ctx.editMessageText(html, extra);
+      return;
+    }
+  } catch {}
+
+  await ctx.reply(html, extra);
+}
+
+async function broadcastNotice(ctx, text) {
+  const r = getRedis();
+  const max = 120;
+  const ids = await r.zrange(KEYS.usersStartedZ, 0, max - 1);
+
+  let sent = 0;
+  let failed = 0;
+
+  const html = [
+    hBold("Notice"),
+    "",
+    `<blockquote>${esc(text)}</blockquote>`,
+    "",
+    fmtUtcLine(),
+  ].join("\n");
+
+  for (const uid of ids || []) {
+    const res = await safeSendHtml(ctx, Number(uid), html);
+    if (res.ok) sent += 1;
+    else failed += 1;
+  }
+
+  return { sent, failed, sample: (ids || []).length, max };
+}
+
 function getBot() {
   if (bot) return bot;
 
   const C = cfg();
   bot = new Telegraf(C.BOT_TOKEN);
 
-  bot.command("start", async (ctx) => {
+  bot.catch(async (err, ctx) => {
+    try {
+      const msg = String(err?.message || err);
+      const html = [hBold("Bot Error"), "", `<pre>${esc(msg).slice(0, 3500)}</pre>`, fmtUtcLine()].join("\n");
+      await logAdmin(ctx, html);
+    } catch {}
+  });
+bot.command("start", async (ctx) => {
     const r = getRedis();
     const uid = ctx.from?.id;
     const now = Date.now();
@@ -237,9 +282,7 @@ function getBot() {
         const html = [
           hBold("New User Started"),
           "",
-          `<pre>userId: ${esc(String(uid))}\nusername: ${esc(
-            ctx.from?.username ? "@" + ctx.from.username : "no_username"
-          )}\nutc: ${esc(utcIso())}</pre>`,
+          `<pre>userId: ${esc(String(uid))}\nusername: ${esc(ctx.from?.username ? "@" + ctx.from.username : "no_username")}\nutc: ${esc(utcIso())}</pre>`,
           userMention(ctx.from),
         ].join("\n");
 
@@ -248,6 +291,10 @@ function getBot() {
     }
 
     await ctx.reply(UI.welcome(), { parse_mode: "HTML", disable_web_page_preview: true });
+  });
+
+  bot.command("ping", async (ctx) => {
+    await ctx.reply("pong");
   });
 
   bot.command("giveaway", async (ctx) => {
@@ -268,7 +315,7 @@ function getBot() {
           "",
           `Giveaway ID: <pre>${esc(gids[0])}</pre>`,
           "",
-          "Next: we will render full giveaway details + join/verify buttons in Phase-C.",
+          "Details will be added in the next step.",
           "",
           fmtUtcLine(),
           footer(),
@@ -279,18 +326,11 @@ function getBot() {
     }
 
     await ctx.reply(
-      [
-        hBold("Select a Giveaway"),
-        "",
-        "Multiple giveaways are active. Please choose one:",
-        "",
-        fmtUtcLine(),
-        footer(),
-      ].join("\n"),
+      [hBold("Select a Giveaway"), "", "Multiple giveaways are active. Choose one:", "", fmtUtcLine(), footer()].join("\n"),
       {
         parse_mode: "HTML",
         disable_web_page_preview: true,
-        ...Markup.inlineKeyboard(gids.map((gid) => [Markup.button.callback(`${gid}`, `u_g_view:${gid}`)])),
+        ...Markup.inlineKeyboard(gids.map((gid) => [Markup.button.callback(`${gid}`, `u:view:${gid}`)])),
       }
     );
   });
@@ -308,15 +348,7 @@ function getBot() {
 
     if (gids.length === 0) {
       await ctx.reply(
-        [
-          hBold("Your Status"),
-          "",
-          "You have no participation record yet.",
-          "Use /giveaway to view active giveaways.",
-          "",
-          fmtUtcLine(),
-          footer(),
-        ].join("\n"),
+        [hBold("Your Status"), "", "No active giveaway found.", "Use /giveaway to check.", "", fmtUtcLine(), footer()].join("\n"),
         { parse_mode: "HTML", disable_web_page_preview: true }
       );
       return;
@@ -327,7 +359,7 @@ function getBot() {
       {
         parse_mode: "HTML",
         disable_web_page_preview: true,
-        ...Markup.inlineKeyboard(gids.map((gid) => [Markup.button.callback(`${gid}`, `u_status:${gid}`)])),
+        ...Markup.inlineKeyboard(gids.map((gid) => [Markup.button.callback(`${gid}`, `u:status:${gid}`)])),
       }
     );
   });
@@ -358,197 +390,306 @@ function getBot() {
     await ctx.reply(UI.contactAck(), { parse_mode: "HTML", disable_web_page_preview: true });
   });
 
-  bot.action(/^u_g_view:(.+)$/i, async (ctx) => {
-    const gid = String(ctx.match[1] || "").trim();
+  bot.action(/^u:view:(.+)$/i, async (ctx) => {
     await ctx.answerCbQuery();
-
+    const gid = String(ctx.match[1] || "").trim();
     await ctx.reply(
-      [
-        hBold("Giveaway Details"),
-        "",
-        `Giveaway ID: <pre>${esc(gid)}</pre>`,
-        "",
-        "Next: full details + join/verify buttons in Phase-C.",
-        "",
-        fmtUtcLine(),
-        footer(),
-      ].join("\n"),
+      [hBold("Giveaway Details"), "", `Giveaway ID: <pre>${esc(gid)}</pre>`, "", "Details + buttons will be added in the next step.", "", fmtUtcLine(), footer()].join("\n"),
       { parse_mode: "HTML", disable_web_page_preview: true }
     );
   });
 
-  bot.action(/^u_status:(.+)$/i, async (ctx) => {
-    const gid = String(ctx.match[1] || "").trim();
+  bot.action(/^u:status:(.+)$/i, async (ctx) => {
     await ctx.answerCbQuery();
-
+    const gid = String(ctx.match[1] || "").trim();
     await ctx.reply(
-      [
-        hBold("Status Details"),
-        "",
-        `Giveaway ID: <pre>${esc(gid)}</pre>`,
-        "",
-        "Next: status rendering in Phase-C.",
-        "",
-        fmtUtcLine(),
-        footer(),
-      ].join("\n"),
+      [hBold("Status Details"), "", `Giveaway ID: <pre>${esc(gid)}</pre>`, "", "Status rendering will be added in the next step.", "", fmtUtcLine(), footer()].join("\n"),
       { parse_mode: "HTML", disable_web_page_preview: true }
     );
   });
-
-  bot.command("admin", async (ctx) => {
+bot.command("admin", async (ctx) => {
     if (!(await requireAdmin(ctx))) return;
 
-    await ctx.reply(
-      [hBold("Admin Control Panel"), "", "Select a section:", "", fmtUtcLine()].join("\n"),
-      { parse_mode: "HTML", disable_web_page_preview: true, ...kbMainAdmin() }
+    await replyOrEdit(
+      ctx,
+      [hBold("Admin Control Panel"), "", "Choose a section:", "", fmtUtcLine()].join("\n"),
+      adminMainKeyboard()
     );
   });
 
-  bot.action("a_back", async (ctx) => {
+  bot.action("a:home", async (ctx) => {
     await ctx.answerCbQuery();
     if (!(await requireAdmin(ctx))) return;
 
-    try {
-      await ctx.editMessageText(
-        [hBold("Admin Control Panel"), "", "Select a section:", "", fmtUtcLine()].join("\n"),
-        { parse_mode: "HTML", disable_web_page_preview: true, ...kbMainAdmin() }
+    await replyOrEdit(
+      ctx,
+      [hBold("Admin Control Panel"), "", "Choose a section:", "", fmtUtcLine()].join("\n"),
+      adminMainKeyboard()
+    );
+  });
+
+  bot.action("a:giveaways", async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!(await requireAdmin(ctx))) return;
+
+    await replyOrEdit(
+      ctx,
+      [hBold("Giveaways"), "", "Manage giveaway lifecycle:", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([
+        [Markup.button.callback("➕ Create (Wizard)", "a:g:create"), Markup.button.callback("📋 List", "a:g:list")],
+        [Markup.button.callback("🟢 Open", "a:g:open"), Markup.button.callback("🧊 Freeze", "a:g:freeze")],
+        [Markup.button.callback("📸 Snapshot", "a:g:snapshot"), Markup.button.callback("⛔ Close", "a:g:close")],
+        [Markup.button.callback("⬅️ Back", "a:home")],
+      ])
+    );
+  });
+
+  bot.action("a:users", async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!(await requireAdmin(ctx))) return;
+
+    await replyOrEdit(
+      ctx,
+      [hBold("Users"), "", "User tools:", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([
+        [Markup.button.callback("🔎 Find User", "a:u:find"), Markup.button.callback("🧷 Lock User", "a:u:lock")],
+        [Markup.button.callback("🔓 Unlock User", "a:u:unlock"), Markup.button.callback("✅ Make VALID", "a:u:valid")],
+        [Markup.button.callback("🚫 Make INVALID", "a:u:invalid"), Markup.button.callback("✉️ Message User", "a:u:msg")],
+        [Markup.button.callback("⬅️ Back", "a:home")],
+      ])
+    );
+  });
+
+  bot.action("a:winners", async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!(await requireAdmin(ctx))) return;
+
+    await replyOrEdit(
+      ctx,
+      [hBold("Winners & Claims"), "", "Winner selection and claim tools:", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([
+        [Markup.button.callback("🎲 Pick Winners", "a:w:pick"), Markup.button.callback("📣 Notify Winners", "a:w:notify")],
+        [Markup.button.callback("✉️ Send Claim (1-by-1)", "a:w:sendclaim"), Markup.button.callback("🔁 Resend Claim", "a:w:resend")],
+        [Markup.button.callback("⏱ Override Expired", "a:w:override"), Markup.button.callback("🚫 Disqualify Winner", "a:w:disq")],
+        [Markup.button.callback("⬅️ Back", "a:home")],
+      ])
+    );
+  });
+
+  bot.action("a:messaging", async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!(await requireAdmin(ctx))) return;
+
+    await replyOrEdit(
+      ctx,
+      [hBold("Messaging"), "", "Notices and direct messaging:", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([
+        [Markup.button.callback("📌 Send Notice (All Users)", "a:m:notice")],
+        [Markup.button.callback("✉️ Message Single User", "a:m:one")],
+        [Markup.button.callback("⬅️ Back", "a:home")],
+      ])
+    );
+  });
+
+  bot.action("a:logs", async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!(await requireAdmin(ctx))) return;
+
+    await replyOrEdit(
+      ctx,
+      [hBold("Logs"), "", "Operational logs:", "", "• Starts", "• Contacts", "• Admin actions", "• Delivery failures", "", fmtUtcLine()].join("\n"),
+      backBtn()
+    );
+  });
+
+  bot.action("a:stats", async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!(await requireAdmin(ctx))) return;
+
+    await replyOrEdit(
+      ctx,
+      [hBold("Stats"), "", "High-level statistics will be shown here.", "", fmtUtcLine()].join("\n"),
+      backBtn()
+    );
+  });
+
+  bot.action("a:settings", async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!(await requireAdmin(ctx))) return;
+
+    const owner = isOwnerId(ctx.from?.id);
+
+    await replyOrEdit(
+      ctx,
+      [hBold("Settings"), "", "Admin-only system settings:", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([
+        [Markup.button.callback("👤 Admin Management", "a:s:admins")],
+        [Markup.button.callback("⬅️ Back", "a:home")],
+        ...(owner ? [] : []),
+      ])
+    );
+  });
+
+  bot.action("a:s:admins", async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!(await requireAdmin(ctx))) return;
+
+    if (!isOwnerId(ctx.from?.id)) {
+      await replyOrEdit(ctx, [hBold("Admin Management"), "", "Only the owner can manage admins.", "", fmtUtcLine()].join("\n"), backBtn());
+      return;
+    }
+
+    await replyOrEdit(
+      ctx,
+      [hBold("Admin Management"), "", "Choose an action:", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([
+        [Markup.button.callback("➕ Add Admin", "a:s:admins:add"), Markup.button.callback("➖ Remove Admin", "a:s:admins:remove")],
+        [Markup.button.callback("📋 List Admins", "a:s:admins:list")],
+        [Markup.button.callback("⬅️ Back", "a:settings")],
+      ])
+    );
+  });
+
+  bot.action("a:s:admins:add", async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!isOwnerId(ctx.from?.id)) return;
+
+    const r = getRedis();
+    await setWiz(r, ctx.chat.id, { t: "add_admin" });
+
+    await replyOrEdit(
+      ctx,
+      [hBold("Add Admin"), "", "Send the userId now (numbers only).", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([[Markup.button.callback("⬅️ Cancel", "a:wiz:cancel")]])
+    );
+  });
+
+  bot.action("a:s:admins:remove", async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!isOwnerId(ctx.from?.id)) return;
+
+    const r = getRedis();
+    await setWiz(r, ctx.chat.id, { t: "remove_admin" });
+
+    await replyOrEdit(
+      ctx,
+      [hBold("Remove Admin"), "", "Send the userId now (numbers only).", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([[Markup.button.callback("⬅️ Cancel", "a:wiz:cancel")]])
+    );
+  });
+
+  bot.action("a:s:admins:list", async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!isOwnerId(ctx.from?.id)) return;
+
+    const r = getRedis();
+    const list = await r.smembers(KEYS.adminsSet);
+
+    await replyOrEdit(
+      ctx,
+      [hBold("Admin List"), "", `<pre>${esc((list || []).join("\n") || "No admins")}</pre>`, "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "a:s:admins")]])
+    );
+  });
+
+  bot.action("a:m:notice", async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!(await requireAdmin(ctx))) return;
+
+    const r = getRedis();
+    await setWiz(r, ctx.chat.id, { t: "notice_all" });
+
+    await replyOrEdit(
+      ctx,
+      [hBold("Send Notice"), "", "Type your notice text now.", "", "It will be sent to a sample batch to avoid timeouts.", "", fmtUtcLine()].join("\n"),
+      Markup.inlineKeyboard([[Markup.button.callback("⬅️ Cancel", "a:wiz:cancel")]])
+    );
+  });
+
+  bot.action("a:wiz:cancel", async (ctx) => {
+    await ctx.answerCbQuery();
+    const r = getRedis();
+    await clearWiz(r, ctx.chat.id);
+
+    await replyOrEdit(
+      ctx,
+      [hBold("Cancelled"), "", "Action cancelled.", "", fmtUtcLine()].join("\n"),
+      backBtn()
+    );
+  });
+
+  bot.action(/^a:(g|u|w|m):/i, async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!(await requireAdmin(ctx))) return;
+    await ctx.reply(UI.comingSoon(), { parse_mode: "HTML", disable_web_page_preview: true });
+  });
+
+  bot.on("text", async (ctx, next) => {
+    const r = getRedis();
+    const wiz = await getWiz(r, ctx.chat.id);
+    if (!wiz) return next();
+
+    const text = String(ctx.message?.text || "").trim();
+
+    if (wiz.t === "add_admin") {
+      if (!/^\d+$/.test(text)) {
+        await ctx.reply("Send a numeric userId only.");
+        return;
+      }
+      await r.sadd(KEYS.adminsSet, text);
+      await clearWiz(r, ctx.chat.id);
+
+      await logAdmin(ctx, [hBold("Admin Added"), "", `<pre>userId: ${esc(text)}\nutc: ${esc(utcIso())}</pre>`].join("\n"));
+      await ctx.reply([hBold("Done"), "", `Admin added: <pre>${esc(text)}</pre>`, "", fmtUtcLine()].join("\n"), {
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      });
+      return;
+    }
+
+    if (wiz.t === "remove_admin") {
+      if (!/^\d+$/.test(text)) {
+        await ctx.reply("Send a numeric userId only.");
+        return;
+      }
+      await r.srem(KEYS.adminsSet, text);
+      await clearWiz(r, ctx.chat.id);
+
+      await logAdmin(ctx, [hBold("Admin Removed"), "", `<pre>userId: ${esc(text)}\nutc: ${esc(utcIso())}</pre>`].join("\n"));
+      await ctx.reply([hBold("Done"), "", `Admin removed: <pre>${esc(text)}</pre>`, "", fmtUtcLine()].join("\n"), {
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      });
+      return;
+    }
+
+    if (wiz.t === "notice_all") {
+      if (!text) {
+        await ctx.reply("Notice text cannot be empty.");
+        return;
+      }
+
+      await clearWiz(r, ctx.chat.id);
+      const res = await broadcastNotice(ctx, text);
+
+      await logAdmin(
+        ctx,
+        [
+          hBold("Notice Sent (Batch)"),
+          "",
+          `<pre>sent: ${esc(String(res.sent))}\nfailed: ${esc(String(res.failed))}\nsample: ${esc(String(res.sample))}\nmax: ${esc(String(res.max))}\nutc: ${esc(utcIso())}</pre>`,
+        ].join("\n")
       );
-    } catch (e) {
+
       await ctx.reply(
-        [hBold("Admin Control Panel"), "", "Select a section:", "", fmtUtcLine()].join("\n"),
-        { parse_mode: "HTML", disable_web_page_preview: true, ...kbMainAdmin() }
+        [hBold("Notice Sent"), "", `Sent: <pre>${esc(String(res.sent))}</pre>`, `Failed: <pre>${esc(String(res.failed))}</pre>`, "", fmtUtcLine()].join("\n"),
+        { parse_mode: "HTML", disable_web_page_preview: true }
       );
-    }
-  });
-
-  bot.action("a_giveaways", async (ctx) => {
-    await ctx.answerCbQuery();
-    if (!(await requireAdmin(ctx))) return;
-
-    await ctx.editMessageText(
-      [hBold("Giveaways"), "", "Manage giveaway lifecycle from here.", "", fmtUtcLine()].join("\n"),
-      { parse_mode: "HTML", disable_web_page_preview: true, ...kbGiveaways() }
-    );
-  });
-
-  bot.action("a_users", async (ctx) => {
-    await ctx.answerCbQuery();
-    if (!(await requireAdmin(ctx))) return;
-
-    await ctx.editMessageText(
-      [hBold("Users"), "", "Next: user search + profile actions in Phase-C.", "", fmtUtcLine()].join("\n"),
-      { parse_mode: "HTML", disable_web_page_preview: true, ...kbBack() }
-    );
-  });
-
-  bot.action("a_messaging", async (ctx) => {
-    await ctx.answerCbQuery();
-    if (!(await requireAdmin(ctx))) return;
-
-    await ctx.editMessageText(
-      [hBold("System Messaging"), "", "Broadcast & direct messaging tools.", "", fmtUtcLine()].join("\n"),
-      { parse_mode: "HTML", disable_web_page_preview: true, ...kbMessaging() }
-    );
-  });
-
-  bot.action("a_stats", async (ctx) => {
-    await ctx.answerCbQuery();
-    if (!(await requireAdmin(ctx))) return;
-
-    await ctx.editMessageText(
-      [
-        hBold("Bot Statistics"),
-        "",
-        "Next: detailed stats in Phase-C.",
-        "• users started",
-        "• active giveaways",
-        "• participants by status",
-        "• winners & claims",
-        "",
-        fmtUtcLine(),
-      ].join("\n"),
-      { parse_mode: "HTML", disable_web_page_preview: true, ...kbBack() }
-    );
-  });
-
-  bot.action("a_settings", async (ctx) => {
-    await ctx.answerCbQuery();
-    if (!(await requireAdmin(ctx))) return;
-
-    await ctx.editMessageText(
-      [hBold("System Settings"), "", "Global settings for admins only.", "", fmtUtcLine()].join("\n"),
-      { parse_mode: "HTML", disable_web_page_preview: true, ...kbSettings(isOwner(ctx)) }
-    );
-  });
-
-  bot.action("a_admins", async (ctx) => {
-    await ctx.answerCbQuery();
-    if (!isOwner(ctx)) {
-      await ctx.reply(UI.accessDenied(), { parse_mode: "HTML", disable_web_page_preview: true });
       return;
     }
 
-    await ctx.editMessageText(
-      [hBold("Admin Management"), "", "Add or remove bot admins.", "", fmtUtcLine()].join("\n"),
-      { parse_mode: "HTML", disable_web_page_preview: true, ...kbAdminManagement() }
-    );
-  });
-
-  bot.action("a_admin_add", async (ctx) => {
-    await ctx.answerCbQuery();
-    if (!isOwner(ctx)) {
-      await ctx.reply(UI.accessDenied(), { parse_mode: "HTML", disable_web_page_preview: true });
-      return;
-    }
-    await ctx.reply(
-      [
-        hBold("Add Admin"),
-        "",
-        "Next (Phase-C): will ask for userId and add to admins list.",
-        "",
-        fmtUtcLine(),
-      ].join("\n"),
-      { parse_mode: "HTML", disable_web_page_preview: true }
-    );
-  });
-
-  bot.action("a_admin_remove", async (ctx) => {
-    await ctx.answerCbQuery();
-    if (!isOwner(ctx)) {
-      await ctx.reply(UI.accessDenied(), { parse_mode: "HTML", disable_web_page_preview: true });
-      return;
-    }
-    await ctx.reply(
-      [
-        hBold("Remove Admin"),
-        "",
-        "Next (Phase-C): will ask for userId and remove from admins list.",
-        "",
-        fmtUtcLine(),
-      ].join("\n"),
-      { parse_mode: "HTML", disable_web_page_preview: true }
-    );
-  });
-
-  bot.action(/^(a_g_create|a_g_list|a_g_freeze|a_g_snapshot|a_g_pick|a_g_close)$/i, async (ctx) => {
-    await ctx.answerCbQuery();
-    if (!(await requireAdmin(ctx))) return;
-
-    await ctx.reply(
-      [hBold("Coming in Phase-C"), "", `Action: <pre>${esc(ctx.match[1])}</pre>`, "", fmtUtcLine()].join("\n"),
-      { parse_mode: "HTML", disable_web_page_preview: true }
-    );
-  });
-
-  bot.action(/^(a_notice_all|a_msg_user|a_notify_winners)$/i, async (ctx) => {
-    await ctx.answerCbQuery();
-    if (!(await requireAdmin(ctx))) return;
-
-    await ctx.reply(
-      [hBold("Coming in Phase-C"), "", `Action: <pre>${esc(ctx.match[1])}</pre>`, "", fmtUtcLine()].join("\n"),
-      { parse_mode: "HTML", disable_web_page_preview: true }
-    );
+    await clearWiz(r, ctx.chat.id);
+    return next();
   });
 
   bot.on("message", async (ctx) => {
@@ -564,12 +705,7 @@ async function readJsonBody(req) {
   const chunks = [];
   for await (const c of req) chunks.push(c);
   const raw = Buffer.concat(chunks).toString("utf8");
-  if (!raw) return {};
-  try {
-    return JSON.parse(raw);
-  } catch (e) {
-    return {};
-  }
+  return JSON.parse(raw || "{}");
 }
 
 module.exports = async (req, res) => {
@@ -583,7 +719,6 @@ module.exports = async (req, res) => {
 
     const b = getBot();
     const update = await readJsonBody(req);
-
     await b.handleUpdate(update);
 
     res.statusCode = 200;
@@ -595,3 +730,4 @@ module.exports = async (req, res) => {
     res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 };
+
