@@ -1,3 +1,4 @@
+cat >> api/bot.js <<'EOF'
 const { Telegraf, Markup } = require("telegraf");
 const { Redis } = require("@upstash/redis");
 
@@ -154,9 +155,16 @@ const KEYS = {
   usersStartedSet: "users:started:set",
   usersStartedZ: "users:started:z",
   giveawaysActiveSet: "giveaways:active:set",
+  giveawaysAllZ: "giveaways:all:z",
+  giveawaysDraftSet: "giveaways:draft:set",
+  giveawayMeta: (gid) => `giveaway:${gid}:meta`,
   adminsSet: "admins:set",
   adminWiz: (chatId) => `admin:wiz:${String(chatId)}`,
 };
+
+function newGid() {
+  return "gw_" + Date.now().toString(36);
+}
 
 function isOwnerId(userId) {
   return Number(userId) === cfg().OWNER_ID;
@@ -197,7 +205,7 @@ function backBtn() {
 }
 
 async function setWiz(r, chatId, obj) {
-  await r.set(KEYS.adminWiz(chatId), JSON.stringify(obj), { ex: 900 });
+  await r.set(KEYS.adminWiz(chatId), JSON.stringify(obj), { ex: 1800 });
 }
 
 async function getWiz(r, chatId) {
@@ -239,13 +247,7 @@ async function broadcastNotice(ctx, text) {
   let sent = 0;
   let failed = 0;
 
-  const html = [
-    hBold("Notice"),
-    "",
-    `<blockquote>${esc(text)}</blockquote>`,
-    "",
-    fmtUtcLine(),
-  ].join("\n");
+  const html = [hBold("Notice"), "", `<blockquote>${esc(text)}</blockquote>`, "", fmtUtcLine()].join("\n");
 
   for (const uid of ids || []) {
     const res = await safeSendHtml(ctx, Number(uid), html);
@@ -255,7 +257,8 @@ async function broadcastNotice(ctx, text) {
 
   return { sent, failed, sample: (ids || []).length, max };
 }
-
+EOF
+cat >> api/bot.js <<'EOF'
 function getBot() {
   if (bot) return bot;
 
@@ -269,7 +272,8 @@ function getBot() {
       await logAdmin(ctx, html);
     } catch {}
   });
-bot.command("start", async (ctx) => {
+
+  bot.command("start", async (ctx) => {
     const r = getRedis();
     const uid = ctx.from?.id;
     const now = Date.now();
@@ -282,7 +286,9 @@ bot.command("start", async (ctx) => {
         const html = [
           hBold("New User Started"),
           "",
-          `<pre>userId: ${esc(String(uid))}\nusername: ${esc(ctx.from?.username ? "@" + ctx.from.username : "no_username")}\nutc: ${esc(utcIso())}</pre>`,
+          `<pre>userId: ${esc(String(uid))}
+username: ${esc(ctx.from?.username ? "@" + ctx.from.username : "no_username")}
+utc: ${esc(utcIso())}</pre>`,
           userMention(ctx.from),
         ].join("\n");
 
@@ -310,16 +316,7 @@ bot.command("start", async (ctx) => {
 
     if (gids.length === 1) {
       await ctx.reply(
-        [
-          hBold("Active Giveaway"),
-          "",
-          `Giveaway ID: <pre>${esc(gids[0])}</pre>`,
-          "",
-          "Details will be added in the next step.",
-          "",
-          fmtUtcLine(),
-          footer(),
-        ].join("\n"),
+        [hBold("Active Giveaway"), "", `Giveaway ID: <pre>${esc(gids[0])}</pre>`, "", fmtUtcLine(), footer()].join("\n"),
         { parse_mode: "HTML", disable_web_page_preview: true }
       );
       return;
@@ -379,7 +376,9 @@ bot.command("start", async (ctx) => {
     const html = [
       hBold("Support Message"),
       "",
-      `<pre>userId: ${esc(String(uid ?? "unknown"))}\nusername: ${esc(uname)}\nutc: ${esc(utcIso())}</pre>`,
+      `<pre>userId: ${esc(String(uid ?? "unknown"))}
+username: ${esc(uname)}
+utc: ${esc(utcIso())}</pre>`,
       hBold("Message"),
       `<blockquote>${esc(text)}</blockquote>`,
       "",
@@ -393,39 +392,33 @@ bot.command("start", async (ctx) => {
   bot.action(/^u:view:(.+)$/i, async (ctx) => {
     await ctx.answerCbQuery();
     const gid = String(ctx.match[1] || "").trim();
-    await ctx.reply(
-      [hBold("Giveaway Details"), "", `Giveaway ID: <pre>${esc(gid)}</pre>`, "", "Details + buttons will be added in the next step.", "", fmtUtcLine(), footer()].join("\n"),
-      { parse_mode: "HTML", disable_web_page_preview: true }
-    );
+    await ctx.reply([hBold("Giveaway Details"), "", `Giveaway ID: <pre>${esc(gid)}</pre>`, "", fmtUtcLine(), footer()].join("\n"), {
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    });
   });
 
   bot.action(/^u:status:(.+)$/i, async (ctx) => {
     await ctx.answerCbQuery();
     const gid = String(ctx.match[1] || "").trim();
-    await ctx.reply(
-      [hBold("Status Details"), "", `Giveaway ID: <pre>${esc(gid)}</pre>`, "", "Status rendering will be added in the next step.", "", fmtUtcLine(), footer()].join("\n"),
-      { parse_mode: "HTML", disable_web_page_preview: true }
-    );
+    await ctx.reply([hBold("Status Details"), "", `Giveaway ID: <pre>${esc(gid)}</pre>`, "", fmtUtcLine(), footer()].join("\n"), {
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    });
   });
-bot.command("admin", async (ctx) => {
+EOF
+cat >> api/bot.js <<'EOF'
+  bot.command("admin", async (ctx) => {
     if (!(await requireAdmin(ctx))) return;
 
-    await replyOrEdit(
-      ctx,
-      [hBold("Admin Control Panel"), "", "Choose a section:", "", fmtUtcLine()].join("\n"),
-      adminMainKeyboard()
-    );
+    await replyOrEdit(ctx, [hBold("Admin Control Panel"), "", "Choose a section:", "", fmtUtcLine()].join("\n"), adminMainKeyboard());
   });
 
   bot.action("a:home", async (ctx) => {
     await ctx.answerCbQuery();
     if (!(await requireAdmin(ctx))) return;
 
-    await replyOrEdit(
-      ctx,
-      [hBold("Admin Control Panel"), "", "Choose a section:", "", fmtUtcLine()].join("\n"),
-      adminMainKeyboard()
-    );
+    await replyOrEdit(ctx, [hBold("Admin Control Panel"), "", "Choose a section:", "", fmtUtcLine()].join("\n"), adminMainKeyboard());
   });
 
   bot.action("a:giveaways", async (ctx) => {
@@ -441,6 +434,21 @@ bot.command("admin", async (ctx) => {
         [Markup.button.callback("📸 Snapshot", "a:g:snapshot"), Markup.button.callback("⛔ Close", "a:g:close")],
         [Markup.button.callback("⬅️ Back", "a:home")],
       ])
+    );
+  });
+
+  bot.action("a:g:create", async (ctx) => {
+    await ctx.answerCbQuery();
+    if (!(await requireAdmin(ctx))) return;
+
+    const r = getRedis();
+    const gid = newGid();
+
+    await setWiz(r, ctx.chat.id, { t: "gw_create", step: "title", gid, data: {} });
+
+    await ctx.reply(
+      [hBold("Create Giveaway — Step 1/2"), "", "Please enter the giveaway title.", "Minimum: 5 characters.", "", fmtUtcLine()].join("\n"),
+      { parse_mode: "HTML", disable_web_page_preview: true }
     );
   });
 
@@ -494,30 +502,18 @@ bot.command("admin", async (ctx) => {
   bot.action("a:logs", async (ctx) => {
     await ctx.answerCbQuery();
     if (!(await requireAdmin(ctx))) return;
-
-    await replyOrEdit(
-      ctx,
-      [hBold("Logs"), "", "Operational logs:", "", "• Starts", "• Contacts", "• Admin actions", "• Delivery failures", "", fmtUtcLine()].join("\n"),
-      backBtn()
-    );
+    await replyOrEdit(ctx, [hBold("Logs"), "", "Operational logs:", "", "• Starts", "• Contacts", "• Admin actions", "• Delivery failures", "", fmtUtcLine()].join("\n"), backBtn());
   });
 
   bot.action("a:stats", async (ctx) => {
     await ctx.answerCbQuery();
     if (!(await requireAdmin(ctx))) return;
-
-    await replyOrEdit(
-      ctx,
-      [hBold("Stats"), "", "High-level statistics will be shown here.", "", fmtUtcLine()].join("\n"),
-      backBtn()
-    );
+    await replyOrEdit(ctx, [hBold("Stats"), "", "High-level statistics will be shown here.", "", fmtUtcLine()].join("\n"), backBtn());
   });
 
   bot.action("a:settings", async (ctx) => {
     await ctx.answerCbQuery();
     if (!(await requireAdmin(ctx))) return;
-
-    const owner = isOwnerId(ctx.from?.id);
 
     await replyOrEdit(
       ctx,
@@ -525,11 +521,11 @@ bot.command("admin", async (ctx) => {
       Markup.inlineKeyboard([
         [Markup.button.callback("👤 Admin Management", "a:s:admins")],
         [Markup.button.callback("⬅️ Back", "a:home")],
-        ...(owner ? [] : []),
       ])
     );
   });
-
+EOF
+cat >> api/bot.js <<'EOF'
   bot.action("a:s:admins", async (ctx) => {
     await ctx.answerCbQuery();
     if (!(await requireAdmin(ctx))) return;
@@ -610,12 +606,7 @@ bot.command("admin", async (ctx) => {
     await ctx.answerCbQuery();
     const r = getRedis();
     await clearWiz(r, ctx.chat.id);
-
-    await replyOrEdit(
-      ctx,
-      [hBold("Cancelled"), "", "Action cancelled.", "", fmtUtcLine()].join("\n"),
-      backBtn()
-    );
+    await replyOrEdit(ctx, [hBold("Cancelled"), "", "Action cancelled.", "", fmtUtcLine()].join("\n"), backBtn());
   });
 
   bot.action(/^a:(g|u|w|m):/i, async (ctx) => {
@@ -677,7 +668,11 @@ bot.command("admin", async (ctx) => {
         [
           hBold("Notice Sent (Batch)"),
           "",
-          `<pre>sent: ${esc(String(res.sent))}\nfailed: ${esc(String(res.failed))}\nsample: ${esc(String(res.sample))}\nmax: ${esc(String(res.max))}\nutc: ${esc(utcIso())}</pre>`,
+          `<pre>sent: ${esc(String(res.sent))}
+failed: ${esc(String(res.failed))}
+sample: ${esc(String(res.sample))}
+max: ${esc(String(res.max))}
+utc: ${esc(utcIso())}</pre>`,
         ].join("\n")
       );
 
@@ -685,6 +680,76 @@ bot.command("admin", async (ctx) => {
         [hBold("Notice Sent"), "", `Sent: <pre>${esc(String(res.sent))}</pre>`, `Failed: <pre>${esc(String(res.failed))}</pre>`, "", fmtUtcLine()].join("\n"),
         { parse_mode: "HTML", disable_web_page_preview: true }
       );
+      return;
+    }
+
+    if (wiz.t === "gw_create") {
+      if (wiz.step === "title") {
+        if (text.length < 5) {
+          await ctx.reply("Title must be at least 5 characters.");
+          return;
+        }
+
+        wiz.data = wiz.data || {};
+        wiz.data.title = text;
+        wiz.step = "details";
+        await setWiz(r, ctx.chat.id, wiz);
+
+        await ctx.reply(
+          [hBold("Create Giveaway — Step 2/2"), "", "Now enter giveaway details / description.", "You can write multiple lines.", "", fmtUtcLine()].join("\n"),
+          { parse_mode: "HTML", disable_web_page_preview: true }
+        );
+        return;
+      }
+
+      if (wiz.step === "details") {
+        wiz.data = wiz.data || {};
+        wiz.data.details = text;
+
+        const nowIso = utcIso();
+        const metaKey = KEYS.giveawayMeta(wiz.gid);
+
+        await r.hset(metaKey, {
+          gid: wiz.gid,
+          state: "DRAFT",
+          title: wiz.data.title,
+          details: wiz.data.details,
+          createdAt: nowIso,
+          createdBy: String(ctx.from?.id || ""),
+        });
+
+        await r.zadd(KEYS.giveawaysAllZ, { score: Date.now(), member: String(wiz.gid) });
+        await r.sadd(KEYS.giveawaysDraftSet, String(wiz.gid));
+
+        await clearWiz(r, ctx.chat.id);
+
+        await ctx.reply(
+          [
+            hBold("Giveaway Created (DRAFT)"),
+            "",
+            `ID: <pre>${esc(wiz.gid)}</pre>`,
+            "",
+            hBold("Title"),
+            `<blockquote>${esc(wiz.data.title)}</blockquote>`,
+            hBold("Details"),
+            `<blockquote>${esc(wiz.data.details)}</blockquote>`,
+            "",
+            "Next: Rules, Channels, Winners, Claim Duration will be added in Part-2.",
+            "",
+            fmtUtcLine(),
+          ].join("\n"),
+          { parse_mode: "HTML", disable_web_page_preview: true }
+        );
+
+        await logAdmin(
+          ctx,
+          [hBold("Giveaway Draft Created"), "", `<pre>gid: ${esc(wiz.gid)}\nby: ${esc(String(ctx.from?.id || ""))}\nutc: ${esc(nowIso)}</pre>`].join("\n")
+        );
+        return;
+      }
+
+      await clearWiz(r, ctx.chat.id);
+      await ctx.reply("Wizard state invalid. Please start again.");
       return;
     }
 
@@ -700,6 +765,8 @@ bot.command("admin", async (ctx) => {
 
   return bot;
 }
+EOF
+cat >> api/bot.js <<'EOF'
 async function readJsonBody(req) {
   if (req.body && typeof req.body === "object") return req.body;
   const chunks = [];
@@ -730,4 +797,5 @@ module.exports = async (req, res) => {
     res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 };
+EOF
 
