@@ -382,3 +382,187 @@ module.exports = async (req, res) => {
     res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 };
+
+/* =========================
+   ADMIN PANEL (PART-2)
+========================= */
+
+function isOwner(ctx) {
+  return ctx.from?.id === cfg().OWNER_ID;
+}
+
+async function isAdmin(ctx) {
+  if (isOwner(ctx)) return true;
+  const r = getRedis();
+  return await r.sismember("admins:set", String(ctx.from?.id));
+}
+
+async function requireAdmin(ctx) {
+  if (!(await isAdmin(ctx))) {
+    await ctx.reply("Access denied.");
+    return false;
+  }
+  return true;
+}
+
+/* -------- /admin -------- */
+
+bot.command("admin", async (ctx) => {
+  if (!(await requireAdmin(ctx))) return;
+
+  await ctx.reply(
+    [
+      hBold("Admin Control Panel"),
+      "",
+      "Select a section:",
+      "",
+      fmtUtcLine(),
+    ].join("\n"),
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("🎁 Giveaways", "a_giveaways")],
+        [Markup.button.callback("👥 Users", "a_users")],
+        [Markup.button.callback("📣 Messaging", "a_messaging")],
+        [Markup.button.callback("📊 Statistics", "a_stats")],
+        [Markup.button.callback("⚙️ Settings", "a_settings")],
+      ]),
+    }
+  );
+});
+
+/* -------- Navigation -------- */
+
+bot.action("a_back", async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.deleteMessage();
+  ctx.telegram.sendMessage(ctx.chat.id, "/admin");
+});
+
+/* -------- Giveaways -------- */
+
+bot.action("a_giveaways", async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!(await requireAdmin(ctx))) return;
+
+  await ctx.editMessageText(
+    [
+      hBold("Giveaways"),
+      "",
+      "Manage all giveaways from here.",
+      "",
+      fmtUtcLine(),
+    ].join("\n"),
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("➕ Create Giveaway", "a_g_create")],
+        [Markup.button.callback("📋 List Giveaways", "a_g_list")],
+        [Markup.button.callback("⬅️ Back", "a_back")],
+      ]),
+    }
+  );
+});
+
+/* -------- Messaging -------- */
+
+bot.action("a_messaging", async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!(await requireAdmin(ctx))) return;
+
+  await ctx.editMessageText(
+    [
+      hBold("System Messaging"),
+      "",
+      "Send notices or direct messages.",
+      "",
+      fmtUtcLine(),
+    ].join("\n"),
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("📌 Send Notice (All Users)", "a_notice_all")],
+        [Markup.button.callback("✉️ Message Single User", "a_msg_user")],
+        [Markup.button.callback("⬅️ Back", "a_back")],
+      ]),
+    }
+  );
+});
+
+/* -------- Statistics -------- */
+
+bot.action("a_stats", async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!(await requireAdmin(ctx))) return;
+
+  await ctx.editMessageText(
+    [
+      hBold("Bot Statistics"),
+      "",
+      "Detailed statistics will appear here.",
+      "",
+      "• Users",
+      "• Giveaways",
+      "• Winners & Claims",
+      "• Admin Actions",
+      "",
+      fmtUtcLine(),
+    ].join("\n"),
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([[Markup.button.callback("⬅️ Back", "a_back")]]),
+    }
+  );
+});
+
+/* -------- Settings -------- */
+
+bot.action("a_settings", async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!(await requireAdmin(ctx))) return;
+
+  await ctx.editMessageText(
+    [
+      hBold("System Settings"),
+      "",
+      "Global admin-only settings.",
+      "",
+      fmtUtcLine(),
+    ].join("\n"),
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("👤 Admin Management", "a_admins")],
+        [Markup.button.callback("⬅️ Back", "a_back")],
+      ]),
+    }
+  );
+});
+
+/* -------- Admin Management -------- */
+
+bot.action("a_admins", async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!isOwner(ctx)) {
+    await ctx.reply("Only owner can manage admins.");
+    return;
+  }
+
+  await ctx.editMessageText(
+    [
+      hBold("Admin Management"),
+      "",
+      "Add or remove bot admins.",
+      "",
+      fmtUtcLine(),
+    ].join("\n"),
+    {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("➕ Add Admin", "a_admin_add")],
+        [Markup.button.callback("➖ Remove Admin", "a_admin_remove")],
+        [Markup.button.callback("⬅️ Back", "a_back")],
+      ]),
+    }
+  );
+});
